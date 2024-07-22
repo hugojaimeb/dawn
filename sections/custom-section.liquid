@@ -1,0 +1,23 @@
+<h1>Hello world</h1>
+{% schema %}
+{
+  "name": "Custom section",
+  "settings": [],
+  "presets": [
+    {
+      "name": "Custom section",
+      "category": "Custom content"
+    }
+  ]
+}
+{% endschema %}
+
+{% stylesheet %}
+  .custom-section {
+    background-color: red;
+  }
+{% endstylesheet %}
+
+{% javascript %}
+  console.log('Hello from custom-section.js');
+{% endjavascript %}
