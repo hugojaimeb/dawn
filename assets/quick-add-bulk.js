@@ -1,15 +1,16 @@
-
 if (!customElements.get('quick-add-bulk')) {
   customElements.define(
     'quick-add-bulk',
-    class QuickAddBulk extends HTMLElement {
+    class QuickAddBulk extends BulkAdd {
       constructor() {
         super();
+        this.quantity = this.querySelector('quantity-input');
+
         const debouncedOnChange = debounce((event) => {
-          if (parseInt(event.target.dataset.cartQuantity) === 0) {
-            this.addToCart(event);
+          if (parseInt(event.target.value) === 0) {
+            this.startQueue(event.target.dataset.index, parseInt(event.target.value));
           } else {
-            this.updateCart(event);
+            this.validateQuantity(event);
           }
         }, ON_CHANGE_DEBOUNCE_TIMER);
 
@@ -21,10 +22,13 @@ if (!customElements.get('quick-add-bulk')) {
         window.pageNumber = decodeURIComponent(pageParams.get('page') || '');
       }
 
-
       connectedCallback() {
         this.cartUpdateUnsubscriber = subscribe(PUB_SUB_EVENTS.cartUpdate, (event) => {
-          if (event.source === "quick-add") {
+          if (
+            event.source === 'quick-add' ||
+            (event.cartData.items && !event.cartData.items.some((item) => item.id === parseInt(this.dataset.index))) ||
+            (event.cartData.variant_id && !(event.cartData.variant_id === parseInt(this.dataset.index)))
+          ) {
             return;
           }
           // If its another section that made the update
@@ -65,16 +69,14 @@ if (!customElements.get('quick-add-bulk')) {
         });
       }
 
-      resetQuantityInput(id) {
-        const input = document.getElementById(id);
-        input.value = input.getAttribute('value');
-        this.isEnterPressed = false;
-      }
-
       cleanErrorMessageOnType(event) {
-        event.target.addEventListener('keypress', () => {
-          event.target.setCustomValidity('');
-        }, { once: true });
+        event.target.addEventListener(
+          'keypress',
+          () => {
+            event.target.setCustomValidity('');
+          },
+          { once: true }
+        );
       }
 
       onCartUpdate() {
@@ -83,147 +85,104 @@ if (!customElements.get('quick-add-bulk')) {
             .then((response) => response.text())
             .then((responseText) => {
               const html = new DOMParser().parseFromString(responseText, 'text/html');
-              const sourceQty = html.querySelector(`#quick-add-bulk-${this.dataset.id}-${this.closest('.collection').dataset.id}`);
+              const sourceQty = html.querySelector(
+                `#quick-add-bulk-${this.dataset.id}-${this.closest('.collection').dataset.id}`
+              );
               if (sourceQty) {
                 this.innerHTML = sourceQty.innerHTML;
               }
               resolve();
             })
-            .catch(e => {
+            .catch((e) => {
               console.error(e);
               reject(e);
             });
         });
       }
 
-      updateCart(event) {
-        this.lastActiveInputId = event.target.getAttribute('data-index');
-        this.quantity = this.querySelector('quantity-input')
-        this.quantity.classList.add('quantity__input-disabled');
+      updateMultipleQty(items) {
         this.selectProgressBar().classList.remove('hidden');
+
+        const ids = Object.keys(items);
         const body = JSON.stringify({
-          quantity: event.target.value,
-          id: event.target.getAttribute('data-index'),
+          updates: items,
           sections: this.getSectionsToRender().map((section) => section.section),
-          sections_url: this.getSectionsUrl()
+          sections_url: this.getSectionsUrl(),
         });
 
-        fetch(`${routes.cart_change_url}`, { ...fetchConfig('javascript'), ...{ body } })
+        fetch(`${routes.cart_update_url}`, { ...fetchConfig(), ...{ body } })
           .then((response) => {
             return response.text();
           })
           .then((state) => {
             const parsedState = JSON.parse(state);
-
-            if (parsedState.description || parsedState.errors) {
-              event.target.setCustomValidity(parsedState.description);
-              event.target.reportValidity();
-              this.resetQuantityInput(event.target.id);
-              this.selectProgressBar().classList.add('hidden');
-              event.target.select();
-              this.cleanErrorMessageOnType(event);
-              return;
-            }
-
-            this.renderSections(parsedState);
-
-            publish(PUB_SUB_EVENTS.cartUpdate, { source: "quick-add", cartData: parsedState });
-
-          }).catch((error) => {
-            console.log(error, 'error')
-          })
-      }
-
-      addToCart(event) {
-        this.selectProgressBar().classList.remove('hidden');
-        this.lastActiveInputId = event.target.getAttribute('data-index');
-        const body = JSON.stringify({
-          items: [
-            {
-              quantity: parseInt(event.target.value),
-              id: parseInt(this.dataset.id)
-            }
-          ],
-          sections: this.getSectionsToRender().map((section) => section.section)
-        });
-
-        fetch(`${routes.cart_add_url}`, { ...fetchConfig('javascript'), ...{ body } })
-          .then((response) => {
-            return response.text();
-          })
-          .then((state) => {
-            const parsedState = JSON.parse(state);
-            if (parsedState.description || parsedState.errors) {
-              event.target.setCustomValidity(parsedState.description);
-              event.target.reportValidity();
-              this.resetQuantityInput(event.target.id);
-              this.selectProgressBar().classList.add('hidden');
-              this.quantity.classList.remove('quantity__input-disabled');
-              event.target.select();
-              this.cleanErrorMessageOnType(event);
-              // Error handling
-              return;
-            }
-
-            this.renderSections(parsedState);
-
+            this.renderSections(parsedState, ids);
             publish(PUB_SUB_EVENTS.cartUpdate, { source: 'quick-add', cartData: parsedState });
-
-          }).catch((error) => {
-            console.error(error);
           })
+          .catch(() => {
+            // Commented out for now and will be fixed when BE issue is done https://github.com/Shopify/shopify/issues/440605
+            // e.target.setCustomValidity(error);
+            // e.target.reportValidity();
+            // this.resetQuantityInput(ids[index]);
+            // this.selectProgressBar().classList.add('hidden');
+            // e.target.select();
+            // this.cleanErrorMessageOnType(e);
+          })
+          .finally(() => {
+            this.selectProgressBar().classList.add('hidden');
+            this.requestStarted = false;
+          });
       }
 
       getSectionsToRender() {
         return [
           {
-            id: `quick-add-bulk-${this.dataset.id}-${this.closest('.collection').dataset.id}`,
-            section: this.closest('.collection').dataset.id,
-            selector: `#quick-add-bulk-${this.dataset.id}-${this.closest('.collection').dataset.id}`
+            id: `quick-add-bulk-${this.dataset.id}-${this.closest('.collection-quick-add-bulk').dataset.id}`,
+            section: this.closest('.collection-quick-add-bulk').dataset.id,
+            selector: `#quick-add-bulk-${this.dataset.id}-${this.closest('.collection-quick-add-bulk').dataset.id}`,
           },
           {
             id: 'cart-icon-bubble',
             section: 'cart-icon-bubble',
-            selector: '.shopify-section'
+            selector: '.shopify-section',
           },
           {
             id: 'CartDrawer',
             selector: '#CartDrawer',
-            section: 'cart-drawer'
-          }
+            section: 'cart-drawer',
+          },
         ];
       }
 
-      getSectionsUrl() {
-        if (window.pageNumber) {
-          return `${window.location.pathname}?page=${window.pageNumber}`
-        } else {
-          return `${window.location.pathname}`
-        }      
-      }
-
-      getSectionInnerHTML(html, selector) {
-        return new DOMParser()
-          .parseFromString(html, 'text/html')
-          .querySelector(selector).innerHTML;
-      }
-
-      renderSections(parsedState) {
-        this.getSectionsToRender().forEach((section => {
+      renderSections(parsedState, ids) {
+        const intersection = this.queue.filter((element) => ids.includes(element.id));
+        if (intersection.length !== 0) return;
+        this.getSectionsToRender().forEach((section) => {
           const sectionElement = document.getElementById(section.id);
-          if (sectionElement && sectionElement.parentElement && sectionElement.parentElement.classList.contains('drawer')) {
-            parsedState.items.length > 0 ? sectionElement.parentElement.classList.remove('is-empty') : sectionElement.parentElement.classList.add('is-empty');
+          if (
+            sectionElement &&
+            sectionElement.parentElement &&
+            sectionElement.parentElement.classList.contains('drawer')
+          ) {
+            parsedState.items.length > 0
+              ? sectionElement.parentElement.classList.remove('is-empty')
+              : sectionElement.parentElement.classList.add('is-empty');
 
             setTimeout(() => {
               document.querySelector('#CartDrawer-Overlay').addEventListener('click', this.cart.close.bind(this.cart));
             });
           }
-          const elementToReplace = sectionElement && sectionElement.querySelector(section.selector) ? sectionElement.querySelector(section.selector) : sectionElement;
+          const elementToReplace =
+            sectionElement && sectionElement.querySelector(section.selector)
+              ? sectionElement.querySelector(section.selector)
+              : sectionElement;
           if (elementToReplace) {
-            elementToReplace.innerHTML =
-              this.getSectionInnerHTML(parsedState.sections[section.section], section.selector);
+            elementToReplace.innerHTML = this.getSectionInnerHTML(
+              parsedState.sections[section.section],
+              section.selector
+            );
           }
-        }));
+        });
 
         if (this.isEnterPressed) {
           this.querySelector(`#Quantity-${this.lastActiveInputId}`).select();
@@ -233,5 +192,5 @@ if (!customElements.get('quick-add-bulk')) {
         this.listenForKeydown();
       }
     }
-);
+  );
 }

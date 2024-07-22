@@ -1,13 +1,12 @@
 if (!customElements.get('quick-order-list-remove-button')) {
   customElements.define(
     'quick-order-list-remove-button',
-    class QuickOrderListRemoveButton extends HTMLElement {
+    class QuickOrderListRemoveButton extends BulkAdd {
       constructor() {
         super();
         this.addEventListener('click', (event) => {
           event.preventDefault();
-          const quickOrderList = this.closest('quick-order-list');
-          quickOrderList.updateQuantity(this.dataset.index, 0);
+          this.startQueue(this.dataset.index, 0);
         });
       }
     }
@@ -22,7 +21,7 @@ if (!customElements.get('quick-order-list-remove-all-button')) {
         super();
         this.quickOrderList = this.closest('quick-order-list');
         const allVariants = this.quickOrderList.querySelectorAll('[data-quantity-variant-id]');
-        const items = {}
+        const items = {};
         let hasVariantsInCart = false;
 
         allVariants.forEach((variant) => {
@@ -40,8 +39,8 @@ if (!customElements.get('quick-order-list-remove-all-button')) {
         this.actions = {
           confirm: 'confirm',
           remove: 'remove',
-          cancel: 'cancel'
-        }
+          cancel: 'cancel',
+        };
 
         this.addEventListener('click', (event) => {
           event.preventDefault();
@@ -57,26 +56,23 @@ if (!customElements.get('quick-order-list-remove-all-button')) {
       }
 
       toggleConfirmation(showConfirmation, showInfo) {
-        this.quickOrderList.querySelector('.quick-order-list-total__confirmation').classList.toggle('hidden', showConfirmation);
-        this.quickOrderList.querySelector('.quick-order-list-total__info').classList.toggle('hidden', showInfo)
+        this.quickOrderList
+          .querySelector('.quick-order-list-total__confirmation')
+          .classList.toggle('hidden', showConfirmation);
+        this.quickOrderList.querySelector('.quick-order-list-total__info').classList.toggle('hidden', showInfo);
       }
     }
   );
-};
+}
 
 if (!customElements.get('quick-order-list')) {
   customElements.define(
     'quick-order-list',
-    class QuickOrderList extends HTMLElement {
+    class QuickOrderList extends BulkAdd {
       constructor() {
         super();
         this.cart = document.querySelector('cart-drawer');
-        this.actions = {
-          add: 'ADD',
-          update: 'UPDATE'
-        }
-
-        this.quickOrderListId = `quick-order-list-${this.dataset.productId}`
+        this.quickOrderListId = `${this.dataset.section}-${this.dataset.productId}`;
         this.defineInputsAndQuickOrderTable();
 
         this.variantItemStatusElement = document.getElementById('shopping-cart-variant-item-status');
@@ -90,7 +86,7 @@ if (!customElements.get('quick-order-list')) {
         if (this.stickyHeaderElement) {
           this.stickyHeader = {
             height: this.stickyHeaderElement.offsetHeight,
-            type: `${this.stickyHeaderElement.getAttribute('data-sticky-type')}`
+            type: `${this.stickyHeaderElement.getAttribute('data-sticky-type')}`,
           };
         }
 
@@ -99,14 +95,14 @@ if (!customElements.get('quick-order-list')) {
 
           window.addEventListener('resize', () => {
             this.totalBarPosition = window.innerHeight - this.getTotalBar().offsetHeight;
-            this.stickyHeader.height = this.stickyHeaderElement ? this.stickyHeaderElement.offsetHeight: 0;
+            this.stickyHeader.height = this.stickyHeaderElement ? this.stickyHeaderElement.offsetHeight : 0;
           });
         }
 
         const pageParams = new URLSearchParams(window.location.search);
         window.pageNumber = decodeURIComponent(pageParams.get('page') || '');
         form.addEventListener('submit', this.onSubmit.bind(this));
-        this.addMultipleDebounce()
+        this.addMultipleDebounce();
       }
 
       cartUpdateUnsubscriber = undefined;
@@ -117,16 +113,23 @@ if (!customElements.get('quick-order-list')) {
 
       connectedCallback() {
         this.cartUpdateUnsubscriber = subscribe(PUB_SUB_EVENTS.cartUpdate, (event) => {
-          if (event.source === this.quickOrderListId) {
+          const variantIds = [];
+          this.querySelectorAll('.variant-item').forEach((item) => {
+            variantIds.push(parseInt(item.dataset.variantId));
+          });
+          if (
+            event.source === this.quickOrderListId ||
+            !event.cartData.items?.some((element) => variantIds.includes(element.variant_id))
+          ) {
             return;
           }
           // If its another section that made the update
-          this.refresh().then(()=> {
+          this.refresh().then(() => {
             this.defineInputsAndQuickOrderTable();
-            this.addMultipleDebounce() 
+            this.addMultipleDebounce();
           });
         });
-        this.sectionId = this.dataset.id;
+        this.sectionId = this.dataset.section;
       }
 
       disconnectedCallback() {
@@ -141,16 +144,11 @@ if (!customElements.get('quick-order-list')) {
 
       onChange(event) {
         const inputValue = parseInt(event.target.value);
-        const cartQuantity = parseInt(event.target.dataset.cartQuantity);
-        const index = event.target.dataset.index;
-        const name = document.activeElement.getAttribute('name');
-
-        const quantity = inputValue - cartQuantity;
         this.cleanErrorMessageOnType(event);
         if (inputValue == 0) {
-          this.updateQuantity(index, inputValue, name, this.actions.update);
+          this.startQueue(event.target.dataset.index, inputValue);
         } else {
-          this.validateQuantity(event, name, index, inputValue, cartQuantity, quantity);
+          this.validateQuantity(event);
         }
       }
 
@@ -161,36 +159,20 @@ if (!customElements.get('quick-order-list')) {
         });
       }
 
-      validateQuantity(event, name, index, inputValue, cartQuantity, quantity) {
-        if (inputValue < event.target.dataset.min) {
-          this.setValidity(event, index, window.quickOrderListStrings.min_error.replace('[min]', event.target.dataset.min))
-        } else if (inputValue > parseInt(event.target.max)) {
-          this.setValidity(event, index, window.quickOrderListStrings.max_error.replace('[max]', event.target.max))
-        } else if (inputValue % parseInt(event.target.step) != 0) {
-          this.setValidity(event, index, window.quickOrderListStrings.step_error.replace('[step]', event.target.step))
-        } else {
-          event.target.setCustomValidity('');
-          event.target.reportValidity();
-          if (cartQuantity > 0) {
-            this.updateQuantity(index, inputValue, name, this.actions.update);
-          } else {
-            this.updateQuantity(index, quantity, name, this.actions.add);
-          }
-      }
-      }
-
-      setValidity(event, index, message) {
-        event.target.setCustomValidity(message);
-        event.target.reportValidity();
-        this.resetQuantityInput(index);
-        event.target.select()
-      }
-
       validateInput(target) {
         if (target.max) {
-          return parseInt(target.value) == 0 || (parseInt(target.value) >= parseInt(target.dataset.min) && parseInt(target.value) <= parseInt(target.max) && parseInt(target.value) % parseInt(target.step) == 0);
+          return (
+            parseInt(target.value) == 0 ||
+            (parseInt(target.value) >= parseInt(target.dataset.min) &&
+              parseInt(target.value) <= parseInt(target.max) &&
+              parseInt(target.value) % parseInt(target.step) == 0)
+          );
         } else {
-          return parseInt(target.value) == 0 || (parseInt(target.value) >= parseInt(target.dataset.min) && parseInt(target.value) % parseInt(target.step) == 0);
+          return (
+            parseInt(target.value) == 0 ||
+            (parseInt(target.value) >= parseInt(target.dataset.min) &&
+              parseInt(target.value) % parseInt(target.step) == 0)
+          );
         }
       }
 
@@ -206,7 +188,7 @@ if (!customElements.get('quick-order-list')) {
               }
               resolve();
             })
-            .catch(e => {
+            .catch((e) => {
               console.error(e);
               reject(e);
             });
@@ -217,29 +199,29 @@ if (!customElements.get('quick-order-list')) {
         return [
           {
             id: this.quickOrderListId,
-            section: document.getElementById(this.quickOrderListId).dataset.id,
-            selector: `#${this.quickOrderListId} .js-contents`
+            section: document.getElementById(this.quickOrderListId).dataset.section,
+            selector: `#${this.quickOrderListId} .js-contents`,
           },
           {
             id: 'cart-icon-bubble',
             section: 'cart-icon-bubble',
-            selector: '.shopify-section'
+            selector: '.shopify-section',
           },
           {
             id: `quick-order-list-live-region-text-${this.dataset.productId}`,
             section: 'cart-live-region-text',
-            selector: '.shopify-section'
+            selector: '.shopify-section',
           },
           {
-            id: `quick-order-list-total-${this.dataset.productId}`,
-            section: document.getElementById(this.quickOrderListId).dataset.id,
-            selector: `#${this.quickOrderListId} .quick-order-list__total`
+            id: `quick-order-list-total-${this.dataset.productId}-${this.dataset.section}`,
+            section: document.getElementById(this.quickOrderListId).dataset.section,
+            selector: `#${this.quickOrderListId} .quick-order-list__total`,
           },
           {
             id: 'CartDrawer',
             selector: '#CartDrawer',
-            section: 'cart-drawer'
-          }
+            section: 'cart-drawer',
+          },
         ];
       }
 
@@ -247,44 +229,53 @@ if (!customElements.get('quick-order-list')) {
         this.querySelectorAll('quantity-input').forEach((qty) => {
           const debouncedOnChange = debounce((event) => {
             this.onChange(event);
-          }, ON_CHANGE_DEBOUNCE_TIMER);
+          }, 100);
           qty.addEventListener('change', debouncedOnChange.bind(this));
-        })
+        });
       }
 
-      addDebounce(id) {
-        const element = this.querySelector(`#Variant-${id} quantity-input`)
-        const debouncedOnChange = debounce((event) => {
-          this.onChange(event);
-        }, ON_CHANGE_DEBOUNCE_TIMER);
-        element.addEventListener('change', debouncedOnChange.bind(this));
-      }
+      renderSections(parsedState, ids) {
+        this.ids.push(ids);
+        const intersection = this.queue.filter((element) => ids.includes(element.id));
+        if (intersection.length !== 0) return;
 
-      renderSections(parsedState, id) {
-        this.getSectionsToRender().forEach((section => {
+        this.getSectionsToRender().forEach((section) => {
           const sectionElement = document.getElementById(section.id);
-          if (sectionElement && sectionElement.parentElement && sectionElement.parentElement.classList.contains('drawer')) {
-            parsedState.items.length > 0 ? sectionElement.parentElement.classList.remove('is-empty') : sectionElement.parentElement.classList.add('is-empty');
+          if (
+            sectionElement &&
+            sectionElement.parentElement &&
+            sectionElement.parentElement.classList.contains('drawer')
+          ) {
+            parsedState.items.length > 0
+              ? sectionElement.parentElement.classList.remove('is-empty')
+              : sectionElement.parentElement.classList.add('is-empty');
             setTimeout(() => {
               document.querySelector('#CartDrawer-Overlay').addEventListener('click', this.cart.close.bind(this.cart));
             });
           }
-          const elementToReplace = sectionElement && sectionElement.querySelector(section.selector) ? sectionElement.querySelector(section.selector) : sectionElement;
+          const elementToReplace =
+            sectionElement && sectionElement.querySelector(section.selector)
+              ? sectionElement.querySelector(section.selector)
+              : sectionElement;
           if (elementToReplace) {
-            if (section.selector === `#${this.quickOrderListId} .js-contents` && id !== undefined) {
-              elementToReplace.querySelector(`#Variant-${id}`).innerHTML =
-              this.getSectionInnerHTML(parsedState.sections[section.section], `#Variant-${id}`);
+            if (section.selector === `#${this.quickOrderListId} .js-contents` && this.ids.length > 0) {
+              this.ids.flat().forEach((i) => {
+                elementToReplace.querySelector(`#Variant-${i}`).innerHTML = this.getSectionInnerHTML(
+                  parsedState.sections[section.section],
+                  `#Variant-${i}`
+                );
+              });
             } else {
-              elementToReplace.innerHTML = this.getSectionInnerHTML(parsedState.sections[section.section], section.selector);
+              elementToReplace.innerHTML = this.getSectionInnerHTML(
+                parsedState.sections[section.section],
+                section.selector
+              );
             }
           }
-        }));
+        });
         this.defineInputsAndQuickOrderTable();
-        if (id) {
-          this.addDebounce(id);
-        } else {
-          this.addMultipleDebounce() 
-        }
+        this.addMultipleDebounce();
+        this.ids = [];
       }
 
       getTableHead() {
@@ -307,13 +298,26 @@ if (!customElements.get('quick-order-list')) {
             this.scrollToCenter();
           }
         } else {
-          const stickyHeaderBottomBorder = this.stickyHeaderElement && this.stickyHeaderElement.getBoundingClientRect().bottom;
+          const stickyHeaderBottomBorder =
+            this.stickyHeaderElement && this.stickyHeaderElement.getBoundingClientRect().bottom;
           const totalBarCrossesInput = inputBottomBorder > this.totalBarPosition;
           const inputOutsideOfViewPort = inputBottomBorder < this.inputFieldHeight;
-          const stickyHeaderCrossesInput = this.stickyHeaderElement && this.stickyHeader.type !== 'on-scroll-up' && this.stickyHeader.height > inputTopBorder;
-          const stickyHeaderScrollupCrossesInput = this.stickyHeaderElement && this.stickyHeader.type === 'on-scroll-up' && this.stickyHeader.height > inputTopBorder && stickyHeaderBottomBorder > 0;
+          const stickyHeaderCrossesInput =
+            this.stickyHeaderElement &&
+            this.stickyHeader.type !== 'on-scroll-up' &&
+            this.stickyHeader.height > inputTopBorder;
+          const stickyHeaderScrollupCrossesInput =
+            this.stickyHeaderElement &&
+            this.stickyHeader.type === 'on-scroll-up' &&
+            this.stickyHeader.height > inputTopBorder &&
+            stickyHeaderBottomBorder > 0;
 
-          if (totalBarCrossesInput || inputOutsideOfViewPort || stickyHeaderCrossesInput || stickyHeaderScrollupCrossesInput) {
+          if (
+            totalBarCrossesInput ||
+            inputOutsideOfViewPort ||
+            stickyHeaderCrossesInput ||
+            stickyHeaderScrollupCrossesInput
+          ) {
             this.scrollToCenter();
           }
         }
@@ -329,7 +333,7 @@ if (!customElements.get('quick-order-list')) {
         }
 
         this.variantListInput = event.target;
-        this.variantListInput.select()
+        this.variantListInput.select();
         if (this.allInputsArray.length !== 1) {
           this.variantListInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
@@ -337,15 +341,16 @@ if (!customElements.get('quick-order-list')) {
               e.target.blur();
               if (this.validateInput(e.target)) {
                 const currentIndex = this.allInputsArray.indexOf(e.target);
-                this.lastKey = e.shiftKey
+                this.lastKey = e.shiftKey;
                 if (!e.shiftKey) {
                   const nextIndex = currentIndex + 1;
                   const nextVariant = this.allInputsArray[nextIndex] || this.allInputsArray[0];
                   nextVariant.select();
                 } else {
                   const previousIndex = currentIndex - 1;
-                  const previousVariant = this.allInputsArray[previousIndex] || this.allInputsArray[this.allInputsArray.length - 1];
-                  this.lastElement = previousVariant.dataset.index
+                  const previousVariant =
+                    this.allInputsArray[previousIndex] || this.allInputsArray[this.allInputsArray.length - 1];
+                  this.lastElement = previousVariant.dataset.index;
                   previousVariant.select();
                 }
               }
@@ -353,7 +358,6 @@ if (!customElements.get('quick-order-list')) {
           });
 
           this.scrollQuickOrderListTable();
-
         } else {
           this.variantListInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
@@ -365,12 +369,13 @@ if (!customElements.get('quick-order-list')) {
       }
 
       updateMultipleQty(items) {
-        this.querySelector('.variant-remove-total .loading__spinner').classList.remove('hidden');
+        this.querySelector('.variant-remove-total .loading__spinner')?.classList.remove('hidden');
+        const ids = Object.keys(items);
 
         const body = JSON.stringify({
           updates: items,
           sections: this.getSectionsToRender().map((section) => section.section),
-          sections_url: this.getSectionsUrl()
+          sections_url: this.dataset.url,
         });
 
         this.updateMessage();
@@ -382,119 +387,22 @@ if (!customElements.get('quick-order-list')) {
           })
           .then((state) => {
             const parsedState = JSON.parse(state);
-            this.renderSections(parsedState);
-          }).catch(() => {
-            this.setErrorMessage(window.cartStrings.error);
-          })
-          .finally(() => {
-            this.querySelector('.variant-remove-total .loading__spinner').classList.add('hidden');
-          });
-      }
-
-      getSectionsUrl() {
-        if (window.pageNumber) {
-          return `${window.location.pathname}?page=${window.pageNumber}`
-        } else {
-          return `${window.location.pathname}`
-        }
-      }
-
-      updateQuantity(id, quantity, name, action) {
-        this.toggleLoading(id, true);
-        this.cleanErrors();
-
-        let routeUrl = routes.cart_change_url;
-        let body = JSON.stringify({
-          quantity,
-          id,
-          sections: this.getSectionsToRender().map((section) => section.section),
-          sections_url: this.getSectionsUrl()
-        });
-        let fetchConfigType;
-        if (action === this.actions.add) {
-          fetchConfigType = 'javascript';
-          routeUrl = routes.cart_add_url;
-          body = JSON.stringify({
-            items: [
-              {
-                quantity: parseInt(quantity),
-                id: parseInt(id)
-              }
-            ],
-            sections: this.getSectionsToRender().map((section) => section.section),
-            sections_url: this.getSectionsUrl()
-          });
-        }
-
-        this.updateMessage();
-        this.setErrorMessage();
-
-        fetch(`${routeUrl}`, { ...fetchConfig(fetchConfigType), ...{ body } })
-          .then((response) => {
-            return response.text();
-          })
-          .then((state) => {
-            const parsedState = JSON.parse(state);
-            const quantityElement = document.getElementById(`Quantity-${id}`);
-            const items = document.querySelectorAll('.variant-item');
-
-            if (parsedState.description || parsedState.errors) {
-              const variantItem = document.querySelector(`[id^="Variant-${id}"] .variant-item__totals.small-hide .loading__spinner`);
-              variantItem.classList.add('loading__spinner--error');
-              this.resetQuantityInput(id, quantityElement);
-              if (parsedState.errors) {
-                this.updateLiveRegions(id, parsedState.errors);
-              } else {
-                this.updateLiveRegions(id, parsedState.description);
-              }
-              return;
-            }
-
-            this.classList.toggle('is-empty', parsedState.item_count === 0);
-
-            this.renderSections(parsedState, id);
-
-            let hasError = false;
-
-            const currentItem = parsedState.items.find((item) => item.variant_id === parseInt(id));
-            const updatedValue = currentItem ? currentItem.quantity : undefined;
-            if (updatedValue && updatedValue !== quantity) {
-              this.updateError(updatedValue, id);
-              hasError = true;
-            }
-
+            this.renderSections(parsedState, ids);
             publish(PUB_SUB_EVENTS.cartUpdate, { source: this.quickOrderListId, cartData: parsedState });
-
-            if (hasError) {
-              this.updateMessage();
-            } else if (action === this.actions.add) {
-              this.updateMessage(parseInt(quantity))
-            } else if (action === this.actions.update) {
-              this.updateMessage(parseInt(quantity - quantityElement.dataset.cartQuantity))
-            } else {
-              this.updateMessage(-parseInt(quantityElement.dataset.cartQuantity))
-            }
-          }).catch((error) => {
-            this.querySelectorAll('.loading__spinner').forEach((overlay) => overlay.classList.add('hidden'));
-            this.resetQuantityInput(id);
-            console.error(error);
+          })
+          .catch(() => {
             this.setErrorMessage(window.cartStrings.error);
           })
           .finally(() => {
-            this.toggleLoading(id);
-            if (this.lastKey && (this.lastElement === id)) {
-              this.querySelector(`#Variant-${id} input`).select()
-            }
+            this.querySelector('.variant-remove-total .loading__spinner')?.classList.add('hidden');
+            this.requestStarted = false;
           });
-      }
-
-      resetQuantityInput(id, quantityElement) {
-        const input = quantityElement ?? document.getElementById(`Quantity-${id}`);
-        input.value = input.getAttribute('value');
       }
 
       setErrorMessage(message = null) {
-        this.errorMessageTemplate = this.errorMessageTemplate ?? document.getElementById(`QuickOrderListErrorTemplate-${this.dataset.productId}`).cloneNode(true);
+        this.errorMessageTemplate =
+          this.errorMessageTemplate ??
+          document.getElementById(`QuickOrderListErrorTemplate-${this.dataset.productId}`).cloneNode(true);
         const errorElements = document.querySelectorAll('.quick-order-list-error');
 
         errorElements.forEach((errorElement) => {
@@ -511,8 +419,8 @@ if (!customElements.get('quick-order-list')) {
         const icons = this.querySelectorAll('.quick-order-list__message-icon');
 
         if (quantity === null || isNaN(quantity)) {
-          messages.forEach(message => message.innerHTML = '');
-          icons.forEach(icon => icon.classList.add('hidden'));
+          messages.forEach((message) => (message.innerHTML = ''));
+          icons.forEach((icon) => icon.classList.add('hidden'));
           return;
         }
 
@@ -520,15 +428,18 @@ if (!customElements.get('quick-order-list')) {
         const absQuantity = Math.abs(quantity);
 
         const textTemplate = isQuantityNegative
-          ? (absQuantity === 1 ? window.quickOrderListStrings.itemRemoved : window.quickOrderListStrings.itemsRemoved)
-          : (quantity === 1 ? window.quickOrderListStrings.itemAdded : window.quickOrderListStrings.itemsAdded);
+          ? absQuantity === 1
+            ? window.quickOrderListStrings.itemRemoved
+            : window.quickOrderListStrings.itemsRemoved
+          : quantity === 1
+          ? window.quickOrderListStrings.itemAdded
+          : window.quickOrderListStrings.itemsAdded;
 
-        messages.forEach((msg) => msg.innerHTML = textTemplate.replace('[quantity]', absQuantity));
+        messages.forEach((msg) => (msg.innerHTML = textTemplate.replace('[quantity]', absQuantity)));
 
         if (!isQuantityNegative) {
           icons.forEach((i) => i.classList.remove('hidden'));
         }
-
       }
 
       updateError(updatedValue, id) {
@@ -541,9 +452,9 @@ if (!customElements.get('quick-order-list')) {
         this.updateLiveRegions(id, message);
       }
 
-      cleanErrors() {
-        this.querySelectorAll('.desktop-row-error').forEach((error) => error.classList.add('hidden'));
-        this.querySelectorAll(`.variant-item__error-text`).forEach((error) => error.innerHTML = '');
+      cleanErrors(id) {
+        // this.querySelectorAll('.desktop-row-error').forEach((error) => error.classList.add('hidden'));
+        // this.querySelectorAll(`.variant-item__error-text`).forEach((error) => error.innerHTML = '');
       }
 
       updateLiveRegions(id, message) {
@@ -553,7 +464,8 @@ if (!customElements.get('quick-order-list')) {
           variantItemErrorDesktop.querySelector('.variant-item__error-text').innerHTML = message;
           variantItemErrorDesktop.closest('tr').classList.remove('hidden');
         }
-        if (variantItemErrorMobile) variantItemErrorMobile.querySelector('.variant-item__error-text').innerHTML = message;
+        if (variantItemErrorMobile)
+          variantItemErrorMobile.querySelector('.variant-item__error-text').innerHTML = message;
 
         this.variantItemStatusElement.setAttribute('aria-hidden', true);
 
@@ -565,12 +477,6 @@ if (!customElements.get('quick-order-list')) {
         }, 1000);
       }
 
-      getSectionInnerHTML(html, selector) {
-        return new DOMParser()
-          .parseFromString(html, 'text/html')
-          .querySelector(selector).innerHTML;
-      }
-
       toggleLoading(id, enable) {
         const quickOrderListItems = this.querySelectorAll(`#Variant-${id} .loading__spinner`);
         const quickOrderListItem = this.querySelector(`#Variant-${id}`);
@@ -580,7 +486,7 @@ if (!customElements.get('quick-order-list')) {
           [...quickOrderListItems].forEach((overlay) => overlay.classList.remove('hidden'));
           this.variantItemStatusElement.setAttribute('aria-hidden', false);
         } else {
-           quickOrderListItem.classList.remove('quick-order-list__container--disabled');
+          quickOrderListItem.classList.remove('quick-order-list__container--disabled');
           quickOrderListItems.forEach((overlay) => overlay.classList.add('hidden'));
         }
       }
